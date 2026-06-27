@@ -1,0 +1,56 @@
+services:
+
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: enterprise-postgres
+    environment:
+      POSTGRES_DB: enterprise_db
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"         # exposed so you can still connect via DBeaver
+    volumes:
+      - postgres_data:/var/lib/postgresql/data   # data persists across restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres} -d enterprise_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Spring Boot Backend ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: enterprise-backend
+    ports:
+      - "9090:9090"         # exposed so you can hit the API directly if needed
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/enterprise_db
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-postgres}
+      SERVER_PORT: 9090
+    depends_on:
+      postgres:
+        condition: service_healthy   # waits for Postgres to be ready before starting
+    restart: on-failure
+
+  # ─── React Frontend (Nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # At build time, Vite bakes this URL into the JS bundle.
+        # Nginx proxies /api/ to the backend container, so this stays as /api
+        VITE_API_BASE_URL: /api
+    container_name: enterprise-frontend
+    ports:
+      - "3000:80"           # visit http://localhost:3000 to use the app
+    depends_on:
+      - backend
+    restart: on-failure
+
+volumes:
+  postgres_data:            # named volume — survives container restarts and rebuilds
