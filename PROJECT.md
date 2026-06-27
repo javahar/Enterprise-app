@@ -99,12 +99,14 @@ HierarchyNode >──< Location       (via NodeLocation)
 | `V2__hierarchy_schema.sql` | 2 | hierarchy_node (self-ref), node_location |
 | `V3__user_node_assignment_schema.sql` | 3 | user_node_assignment |
 | `V4__fix_role_columns.sql` | fix | Converts role_id from SMALLINT FK → VARCHAR(50) to match Java enum |
+| `V5__remove_location_is_active.sql` | 1 | Drops is_active from location (locations have no lifecycle — only orgs and users do) |
+| `V6__performance_indexes.sql` | perf | Composite indexes: (organization_id, is_active) on app_user; (organization_id, level) on hierarchy_node |
 
 ### Table Summary
 
 ```sql
 organization          (id, name, description, is_active, created_at, updated_at)
-location              (id, name, address, city, state_code, zip, organization_id, is_active, ...)
+location              (id, name, address, city, state_code, zip, organization_id, created_at, updated_at)
 app_user              (id, first_name, last_name, email, organization_id, is_active, ...)
 access_role           (id SMALLINT, name VARCHAR)           -- lookup: READ/WRITE/ADMIN
 user_location         (user_id, location_id, role_id VARCHAR, assigned_at)
@@ -171,6 +173,15 @@ The "must be in parent level before child level" rule lives in the service layer
 
 `ddl-auto: validate` means Hibernate only validates the schema — Flyway owns creation and migration. This is the production-safe approach: schema changes are versioned, reviewable, and repeatable across environments.
 
+### Why paginated list endpoints (`PageResponse<T>`)?
+
+All list endpoints (`GET /organizations`, `/locations`, `/users`, `/users/:id/locations`) return a `PageResponse<T>` envelope instead of a plain array. With thousands of records, returning an unbounded list loads everything into heap in a single request. Pagination caps memory usage per request, keeps response times predictable, and lets the UI build infinite scroll or page controls without a separate count call (`totalElements` is included in every page response).
+
+Default: `?page=0&size=20`. Shape:
+```json
+{ "content": [...], "page": 0, "size": 20, "totalElements": 1500, "totalPages": 75, "last": false }
+```
+
 ---
 
 ## Phase 1 — Foundation
@@ -182,11 +193,11 @@ The "must be in parent level before child level" rule lives in the service layer
 | ID | Task | Status |
 |---|---|---|
 | P1-1 | Project scaffolding — Spring Boot, Flyway, React + Vite, MUI, repo structure | ✅ Done |
-| P1-2 | Organization entity + REST API (CRUD) + React UI | ⬜ Next |
-| P1-3 | Location entity + REST API (CRUD, org-scoped) + React UI | ⬜ |
-| P1-4 | User entity + REST API (CRUD, org-scoped) + React UI | ⬜ |
-| P1-5 | UserLocation — assign users to locations with a role, UI for assignment | ⬜ |
-| P1-6 | Frontend ↔ backend wiring — React Query hooks, Axios client, CORS verified | ⬜ |
+| P1-2 | Organization entity + REST API (CRUD) + React UI | ✅ Done |
+| P1-3 | Location entity + REST API (CRUD, org-scoped) + React UI | ✅ Done |
+| P1-4 | User entity + REST API (CRUD, org-scoped) + React UI | ✅ Done |
+| P1-5 | UserLocation — assign users to locations with a role, UI for assignment | ✅ Done |
+| P1-6 | Frontend ↔ backend wiring — React Query hooks, Axios client, CORS verified | ✅ Done |
 | P1-7 | Push to GitHub | ⬜ |
 
 ### API Endpoints (Phase 1 target)
@@ -210,10 +221,14 @@ GET    /api/users/:id
 PUT    /api/users/:id
 DELETE /api/users/:id
 
-GET    /api/users/:userId/locations
+GET    /api/users/:userId/locations              ?page=0&size=20  → PageResponse
 POST   /api/users/:userId/locations          body: { locationId, role }
 DELETE /api/users/:userId/locations/:locationId
+
+GET    /api/locations/:locationId/users/count    → { count }
 ```
+
+> **Pagination:** `GET` list endpoints (`/organizations`, `/:orgId/locations`, `/:orgId/users`, `/users/:id/locations`) all accept `?page=0&size=20` and return `PageResponse<T>` — see Architectural Decisions for the response shape.
 
 ---
 
